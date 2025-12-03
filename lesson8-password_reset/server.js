@@ -2,7 +2,6 @@ const express = require("express");
 const mongoose = require("mongoose");
 const bcrypt = require("bcryptjs");
 const crypto = require("crypto"); // for secure random token
-const { stringify } = require("querystring");
 // const nodemailer = require("nodemailer"); // uncomment for real email
 
 const app = express();
