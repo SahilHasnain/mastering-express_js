@@ -89,7 +89,7 @@ app.post("/refresh", async (req, res) => {
 
         const user = User.findbyId(decoded.userId);
 
-        if (!user || user.refreshToken !== token) res.status(401).send("Invalid access token");
+        if (!user || user.refreshToken !== token) res.status(401).send("Invalid refresh token");
 
         const newAccessToken = createAccessToken(user._id)
 

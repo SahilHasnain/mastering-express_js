@@ -53,7 +53,7 @@ const transporter = nodemailer.createTransport({
 })
 
 // Email send function
-async function sendEmail (to, subject, text) {
+async function sendEmail(to, subject, text) {
     await transporter.sendMail({
         from: `"Your App" <${process.env.EMAIL_USER}>`,
         to,
