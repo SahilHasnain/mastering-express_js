@@ -33,6 +33,37 @@ const upload = multer({
     limits: { fileSize: 20 * 1024 * 1024 }
 })
 
+const s3 = new S3Client({
+    region: process.env.AWS_BUCKET_REGION,
+    credentials: {
+        accessKeyId: process.env.AWS_ACCESS_KEY,
+        secretAccessKey: process.env.AWS_SECRET_KEY,
+    }
+})
+
+const uploadBufferToS3 = async (file) => {
+    const Key = `${Date.now()}-${file.originalName.replace(/\s+/g, "_")}`;
+    const params = {
+        Bucket: process.env.AWS_BUCKET_NAME,
+        Key,
+        Body: file.buffer,
+        ContentType: file.mimetype,
+    }
+
+    const command = new PutObjectCommand(params);
+    await s3.send(command);
+
+    return { key: Key, url: `https://${process.env.AWS_BUCKET_NAME}.s3.${process.env.AWS_BUCKET_REGION}.amazonaws.com/${Key}` }
+}
+
+async function getSignedUrlForKey(key, expiresIn = 3600) {
+    const command = new GetObjectCommand({
+        Bucket: process.env.AWS_BUCKET_NAME,
+        Key: key
+    })
+    return await getSignedUrl(s3, command, { expiresIn })
+}
+
 const asyncHandler = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 
 const UPLOADS_DIR = path.join(__dirname, "uploads");
@@ -60,6 +91,13 @@ app.post("/upload/local-copy", upload.single("file"), asyncHandler(async (req, r
     })
 }))
 
+app.post("/upload/s3", upload.single("file"), asyncHandler(async () => {
+    if (!req.file) return res.status(400).json({ message: "File required" });
+
+    const { key, url } = await uploadBufferToS3(req.file);
+
+    res.status(201).json({ message: "File Uploaded", key, url })
+}))
 app.post("upload/s3-stream", upload.single("file"), asyncHandler(async (req, res) => {
     if (!req.file) return res.status(400).json({ message: "File required" });
 

@@ -43,6 +43,19 @@ const s3 = new S3Client({
     },
 });
 
+async function getS3RangeStream(Key, start, end) {
+    const command = new GetObjectCommand({
+        Bucket: process.env.AWS_BUCKET_NAME,
+        Key,
+        Range: `bytes=${start}-${end}`,
+    });
+
+    const data = await s3.send(command);
+
+    // data.Body is a Node Readable Stream
+    return data.Body;
+}
+
 // -----------------------------
 // ASYNC HANDLER (error safe routes)
 // -----------------------------
@@ -162,50 +175,76 @@ app.post(
 // GET /video/sample.mp4
 // Browser automatically sends: Range: bytes=0-...
 app.get(
-    "/video/:name",
+    "/video-s3/:key",
     asyncHandler(async (req, res) => {
-        const fileName = path.basename(req.params.name);
-        const videoPath = path.join(UPLOADS_DIR, fileName); // ya koi "assets" folder
+        const Key = decodeURIComponent(req.params.key);
 
-        if (!fs.existsSync(videoPath)) {
-            return res.status(404).send("Video not found");
-        }
-
-        const stat = await fs.promises.stat(videoPath);
-        const fileSize = stat.size;
-
+        // --------------------------
+        // 1. Check range header
+        // --------------------------
         const range = req.headers.range;
 
-        // agar range nahi aya, full file stream bhej sakte ho (200 OK)
         if (!range) {
+            // Agar browser ne range nahi bheja, to full file stream
+            // Pehle file size nikalna padega (HEAD request)
+            const headCommand = new HeadObjectCommand({
+                Bucket: process.env.AWS_BUCKET_NAME,
+                Key,
+            });
+
+            let meta;
+            try {
+                meta = await s3.send(headCommand);
+            } catch (err) {
+                console.error("HEAD error:", err);
+                return res.status(404).send("Video not found on S3");
+            }
+
+            const fileSize = meta.ContentLength;
+
             res.writeHead(200, {
                 "Content-Length": fileSize,
-                "Content-Type": "video/mp4",
+                "Content-Type": meta.ContentType || "video/mp4",
                 "Accept-Ranges": "bytes",
             });
 
-            const fullStream = fs.createReadStream(videoPath);
+            // Full file stream
+            const fullStream = await getS3RangeStream(Key, 0, fileSize - 1);
             fullStream.pipe(res);
 
             fullStream.on("error", (err) => {
-                console.error("Full video stream error:", err);
-                if (!res.headersSent) {
-                    res.status(500).send("Error streaming video");
-                } else {
-                    res.destroy(err);
-                }
+                console.error("S3 full stream error:", err);
+                res.destroy(err);
             });
 
             return;
         }
 
-        // RANGE PRESENT
-        // Example: "bytes=1000-2000"
+        // --------------------------
+        // 2. Parse range (e.g. bytes=1000-2000)
+        // --------------------------
+        const headCommand = new HeadObjectCommand({
+            Bucket: process.env.AWS_BUCKET_NAME,
+            Key,
+        });
+
+        let meta;
+        try {
+            meta = await s3.send(headCommand);
+        } catch (err) {
+            console.error("HEAD error:", err);
+            return res.status(404).send("S3 object not found");
+        }
+
+        const fileSize = meta.ContentLength;
+
         const parts = range.replace(/bytes=/, "").split("-");
         const start = parseInt(parts[0], 10);
         const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
 
-        // basic validation
+        // --------------------------
+        // 3. Validate range
+        // --------------------------
         if (
             Number.isNaN(start) ||
             Number.isNaN(end) ||
@@ -213,7 +252,6 @@ app.get(
             end >= fileSize ||
             start > end
         ) {
-            // 416 standard behavior
             return res
                 .status(416)
                 .set("Content-Range", `bytes */${fileSize}`)
@@ -226,22 +264,21 @@ app.get(
             "Content-Range": `bytes ${start}-${end}/${fileSize}`,
             "Accept-Ranges": "bytes",
             "Content-Length": chunkSize,
-            "Content-Type": "video/mp4",
+            "Content-Type": meta.ContentType || "video/mp4",
         };
 
-        // partial content
         res.writeHead(206, headers);
 
-        const videoStream = fs.createReadStream(videoPath, { start, end });
-        videoStream.pipe(res);
+        // --------------------------
+        // 4. Fetch S3 stream for this byte range
+        // --------------------------
+        const rangeStream = await getS3RangeStream(Key, start, end);
 
-        videoStream.on("error", (err) => {
-            console.error("Partial video stream error:", err);
-            if (!res.headersSent) {
-                res.status(500).send("Error streaming video");
-            } else {
-                res.destroy(err);
-            }
+        rangeStream.pipe(res);
+
+        rangeStream.on("error", (err) => {
+            console.error("S3 range stream error:", err);
+            res.destroy(err);
         });
     })
 );
